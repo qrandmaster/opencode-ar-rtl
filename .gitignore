@@ -1,0 +1,9 @@
+# ملفات لا تُرفع
+state.json
+config.json
+*.log
+*.bak
+*.bak-*
+node_modules/
+.DS_Store
+Thumbs.db
