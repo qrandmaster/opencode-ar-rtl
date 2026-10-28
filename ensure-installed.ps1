@@ -1,0 +1,86 @@
+﻿#requires -Version 5.1
+<#
+  ensure-installed.ps1 — يضمن بقاء الحزمة العربية مثبتة دائماً.
+  يفحص app.asar: إن كانت الحزمة سليمة خرج فوراً بلا أي أثر،
+  وإلا طبّقها (مع انتظار إغلاق التطبيق إن كان يعمل، ثم إعادة فتحه).
+  مصمّم للتشغيل الدوري من مجدول المهام — لهذا لا يسجّل شيئاً في السجل
+  إلا عند العمل الفعلي أو الخطأ.
+#>
+param(
+  [string]$AppDir = "",
+  [int]$TimeoutMinutes = 60
+)
+
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$log = Join-Path $here 'ensure-installed.log'
+function Log($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Add-Content -Path $log -Encoding UTF8 }
+
+# قفل يمنع تداخل النسخ (المجدول يشغّل السكربت كل بضع دقائق)
+$lock = Join-Path $here 'ensure.lock'
+if (Test-Path $lock) {
+  $oldPid = (Get-Content $lock -ErrorAction SilentlyContinue) -as [int]
+  if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) { exit 0 }
+}
+$PID | Set-Content -Path $lock
+
+try {
+  # اكتشاف مجلد التثبيت تلقائياً (تغيّر اسمه بين إصدارات التطبيق)
+  if (-not $AppDir) {
+    foreach ($c in @(
+        "$env:LOCALAPPDATA\Programs\ai.opencode.desktop",
+        "$env:LOCALAPPDATA\Programs\@opencodedesktop"
+      )) {
+      if (Test-Path (Join-Path $c 'resources\app.asar')) { $AppDir = $c; break }
+    }
+  }
+  if (-not $AppDir) { Log 'لم يُعثر على مجلد التثبيت.'; exit 1 }
+
+  $check = & node (Join-Path $here 'build\check.mjs') $AppDir | ConvertFrom-Json
+  if (-not $check.exists) { Log 'app.asar غير موجود.'; exit 1 }
+  if ($check.patched) { exit 0 }
+
+  Log ("الحزمة غير مثبتة على الإصدار " + $check.version + " — إعداد التثبيت.")
+
+  $wasRunning = $false
+  $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+  while (Get-Process -Name OpenCode -ErrorAction SilentlyContinue) {
+    $wasRunning = $true
+    if ((Get-Date) -gt $deadline) { Log 'انتهت المدة دون إغلاق التطبيق — أُلغي (ستُعاد المحاولة دورياً).'; exit 1 }
+    Start-Sleep -Milliseconds 1500
+  }
+  if ($wasRunning) { Log 'أُغلق التطبيق.'; Start-Sleep -Milliseconds 1500 }
+
+  function Run-Patch([string]$mode) {
+    for ($i = 1; $i -le 3; $i++) {
+      Log ("تشغيل patch " + $mode + " (محاولة " + $i + ")")
+      & node (Join-Path $here 'build\patch.mjs') --app $AppDir $mode *>> $log
+      if ($LASTEXITCODE -eq 0) { return $true }
+      Log "محاولة $i لـ$mode فشلت (exit $LASTEXITCODE)"
+      Start-Sleep -Seconds 2
+    }
+    return $false
+  }
+
+  if (Test-Path (Join-Path $AppDir 'resources\app.asar.orig-*')) {
+    if (-not (Run-Patch '--revert')) { Log 'تعذّر استرجاع الأصل — إلغاء.'; exit 1 }
+  }
+
+  if (-not (Run-Patch '--apply')) { Log 'تعذّر البناء أو التبديل.'; exit 1 }
+  Log ("تم التثبيت على الإصدار " + $check.version + ".")
+
+  # إعادة فتح التطبيق فقط إن كان يعمل حين بدأنا (أي أن المستخدم أغلقه لهدف التحديث)
+  if ($wasRunning) {
+    $proc = Start-Process -FilePath (Join-Path $AppDir 'OpenCode.exe') -PassThru
+    Log ("أُعيد فتح التطبيق pid=" + $proc.Id)
+    Start-Sleep -Seconds 40
+    if ($proc.HasExited) {
+      Log 'خرج التطبيق بعد التبديل — استرجاع الأصل.'
+      & node (Join-Path $here 'build\patch.mjs') --app $AppDir --revert *>> $log
+      Start-Process -FilePath (Join-Path $AppDir 'OpenCode.exe') | Out-Null
+      Log 'أُعيد الأصل وفتح التطبيق.'
+    }
+  }
+} finally {
+  Remove-Item $lock -Force -ErrorAction SilentlyContinue
+}

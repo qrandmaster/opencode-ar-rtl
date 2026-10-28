@@ -2,6 +2,7 @@
 state.json
 config.json
 *.log
+*.lock
 *.bak
 *.bak-*
 node_modules/

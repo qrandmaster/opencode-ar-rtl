@@ -7,7 +7,8 @@
 param(
   [string]$AppDir = "",
   [switch]$WaitForClose,
-  [switch]$Force
+  [switch]$Force,
+  [switch]$NoWatcher
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,21 @@ if ($procs.Count -gt 0) {
 Info '== بناء الأرشيف المعدّل وتثبيته =='
 & node $patch --app $AppDir --apply
 if ($LASTEXITCODE -ne 0) { Fail 'فشل البناء أو التبديل' }
+
+# تسجيل مراقب دوري يعيد التثبيت تلقائياً بعد كل تحديث للتطبيق
+if (-not $NoWatcher) {
+  $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + (Join-Path $here 'ensure-launch.vbs') + '"')
+  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+  try {
+    Register-ScheduledTask -TaskName 'OpenCodeRTL-Ensure' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+    Info 'سُجّل المراقب الدوري (كل 5 دقائق) — يعيد التثبيت تلقائياً بعد كل تحديث للتطبيق.'
+  } catch {
+    Write-Host "تحذير: تعذّر تسجيل المراقب الدوري: $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+}
 
 Write-Host ""
 Write-Host "تم التثبيت. افتح OpenCode — ستظهر الواجهة بالعربية من اليمين إلى اليسار." -ForegroundColor Green

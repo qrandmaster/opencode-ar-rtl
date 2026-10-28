@@ -12,6 +12,9 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $patch = Join-Path $here 'build\patch.mjs'
 
+# إزالة المراقب الدوري أولاً حتى لا يعيد التثبيت بعد التراجع
+Unregister-ScheduledTask -TaskName 'OpenCodeRTL-Ensure' -Confirm:$false -ErrorAction SilentlyContinue
+
 function Get-Running { @(Get-Process -Name OpenCode -ErrorAction SilentlyContinue) }
 
 # يكتشف مجلد التثبيت تلقائياً (تغيّر اسمه بين إصدارات التطبيق)
