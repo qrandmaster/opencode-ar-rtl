@@ -1,10 +1,9 @@
 ﻿#requires -Version 5.1
 <#
-  ensure-installed.ps1 — يضمن بقاء الحزمة العربية مثبتة دائماً.
-  يفحص app.asar: إن كانت الحزمة سليمة خرج فوراً بلا أي أثر،
-  وإلا طبّقها (مع انتظار إغلاق التطبيق إن كان يعمل، ثم إعادة فتحه).
-  مصمّم للتشغيل الدوري من مجدول المهام — لهذا لا يسجّل شيئاً في السجل
-  إلا عند العمل الفعلي أو الخطأ.
+  ensure-installed.ps1 — يضمن بقاء الحزمة العربية مثبتة وحديثة دائماً.
+  يفحص app.asar: إن كانت الحزمة سليمة ومطابقة لملفات التعريب الحالية خرج فوراً
+  بلا أي أثر، وإلا طبّقها (بانتظار إغلاق التطبيق إن كان يعمل، ثم إعادة فتحه).
+  مصمّم للتشغيل الدوري من مجدول المهام — لا يسجّل إلا عند العمل الفعلي أو الخطأ.
 #>
 param(
   [string]$AppDir = "",
@@ -12,6 +11,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $log = Join-Path $here 'ensure-installed.log'
 function Log($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Add-Content -Path $log -Encoding UTF8 }
@@ -38,9 +39,10 @@ try {
 
   $check = & node (Join-Path $here 'build\check.mjs') $AppDir | ConvertFrom-Json
   if (-not $check.exists) { Log 'app.asar غير موجود.'; exit 1 }
-  if ($check.patched) { exit 0 }
+  if ($check.patched -and -not $check.stale) { exit 0 }
 
-  Log ("الحزمة غير مثبتة على الإصدار " + $check.version + " — إعداد التثبيت.")
+  if ($check.patched) { Log ("الحزمة قديمة (" + $check.reason + ") — إعادة البناء.") }
+  else { Log ("الحزمة غير مثبتة على الإصدار " + $check.version + " — إعداد التثبيت.") }
 
   $wasRunning = $false
   $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
@@ -54,7 +56,8 @@ try {
   function Run-Patch([string]$mode) {
     for ($i = 1; $i -le 3; $i++) {
       Log ("تشغيل patch " + $mode + " (محاولة " + $i + ")")
-      & node (Join-Path $here 'build\patch.mjs') --app $AppDir $mode *>> $log
+      & node (Join-Path $here 'build\patch.mjs') --app $AppDir $mode 2>&1 |
+        ForEach-Object { "$_" | Add-Content -Path $log -Encoding UTF8 }
       if ($LASTEXITCODE -eq 0) { return $true }
       Log "محاولة $i لـ$mode فشلت (exit $LASTEXITCODE)"
       Start-Sleep -Seconds 2
@@ -76,7 +79,8 @@ try {
     Start-Sleep -Seconds 40
     if ($proc.HasExited) {
       Log 'خرج التطبيق بعد التبديل — استرجاع الأصل.'
-      & node (Join-Path $here 'build\patch.mjs') --app $AppDir --revert *>> $log
+      & node (Join-Path $here 'build\patch.mjs') --app $AppDir --revert 2>&1 |
+        ForEach-Object { "$_" | Add-Content -Path $log -Encoding UTF8 }
       Start-Process -FilePath (Join-Path $AppDir 'OpenCode.exe') | Out-Null
       Log 'أُعيد الأصل وفتح التطبيق.'
     }

@@ -14,6 +14,7 @@ $patch = Join-Path $here 'build\patch.mjs'
 
 # إزالة المراقب الدوري أولاً حتى لا يعيد التثبيت بعد التراجع
 Unregister-ScheduledTask -TaskName 'OpenCodeRTL-Ensure' -Confirm:$false -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:LOCALAPPDATA 'OpenCodeRTL') -Recurse -Force -ErrorAction SilentlyContinue
 
 function Get-Running { @(Get-Process -Name OpenCode -ErrorAction SilentlyContinue) }
 

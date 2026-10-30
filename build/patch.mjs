@@ -9,6 +9,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { openAsar, closeAsar, getNode, readEntry, buildAsar, verifyAsar } from "./asar.mjs";
 
@@ -28,6 +29,9 @@ const DEFAULT_DIR = String(
   (readJson(path.join(ROOT, "config.json"), {}) || {}).defaultDir || process.env.OC_AR_DEFAULT_DIR || ""
 );
 const DEFAULT_DIR_JS = JSON.stringify(DEFAULT_DIR);
+if (DEFAULT_DIR && !fs.existsSync(DEFAULT_DIR)) {
+  console.warn("تحذير: مجلد المنتقي الافتراضي غير موجود: " + DEFAULT_DIR);
+}
 const LAST_DIR =
   '(()=>{try{return localStorage.getItem("oc.lastDir")||' +
   DEFAULT_DIR_JS +
@@ -106,6 +110,20 @@ function readJson(p, fallback) {
   } catch {
     return fallback;
   }
+}
+
+// بصمة مدخلات البناء: تغيّرها يعني أن الحزمة المثبّتة قديمة وتحتاج إعادة بناء
+function assetsHash() {
+  const h = crypto.createHash("sha256");
+  for (const rel of ["assets/ar-rtl.js", "assets/ar-rtl.css", "i18n/ar-extra.json", "build/patch.mjs"]) {
+    try {
+      h.update(fs.readFileSync(path.join(ROOT, rel)));
+    } catch {
+      h.update("missing:" + rel);
+    }
+    h.update("\0");
+  }
+  return h.digest("hex").slice(0, 16);
 }
 
 function versionOf(header) {
@@ -282,6 +300,7 @@ function build() {
         files: check.files,
         bytes: check.bytes,
         translations: keys.length,
+        assetsHash: assetsHash(),
       },
       null,
       2

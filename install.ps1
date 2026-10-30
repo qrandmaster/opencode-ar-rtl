@@ -59,7 +59,15 @@ if ($LASTEXITCODE -ne 0) { Fail 'فشل البناء أو التبديل' }
 
 # تسجيل مراقب دوري يعيد التثبيت تلقائياً بعد كل تحديث للتطبيق
 if (-not $NoWatcher) {
-  $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + (Join-Path $here 'ensure-launch.vbs') + '"')
+  # المشغّل في موضع ثابت (%LOCALAPPDATA%\OpenCodeRTL) حتى يبقى المجدول صالحاً
+  # لو نُقل مجلد المشروع أو أُعيدت تسميته.
+  $launcherDir = Join-Path $env:LOCALAPPDATA 'OpenCodeRTL'
+  New-Item -ItemType Directory -Force -Path $launcherDir | Out-Null
+  Copy-Item (Join-Path $here 'launcher\launch.vbs') $launcherDir -Force
+  Copy-Item (Join-Path $here 'launcher\resolve.ps1') $launcherDir -Force
+  $here | Set-Content -Path (Join-Path $launcherDir 'target.txt') -Encoding UTF8
+
+  $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + (Join-Path $launcherDir 'launch.vbs') + '"')
   $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
