@@ -126,6 +126,54 @@ function assetsHash() {
   return h.digest("hex").slice(0, 16);
 }
 
+/* ---------- بناء مسبق وتبديل فوري ----------
+ * بناء الأرشيف يستغرق نحو ثانية، والتطبيق قد يعيد فتح نفسه خلالها فيفشل التبديل.
+ * لذلك نبني app.asar.new مسبقاً (لا يمسّ app.asar)، ثم نبدّله بمجرد تحرّر الملف:
+ * عملية واحدة تستغرق أجزاء من الثانية.
+ */
+const META = asarNew + ".json";
+
+function readMeta() {
+  return readJson(META, null);
+}
+
+function newIsValid(version) {
+  const m = readMeta();
+  return !!m && m.version === version && m.assetsHash === assetsHash() && fs.existsSync(asarNew);
+}
+
+function swapIn(version, meta) {
+  const swap = asar + ".swap";
+  fs.renameSync(asar, swap);
+  try {
+    fs.renameSync(asarNew, asar);
+  } catch (e) {
+    fs.renameSync(swap, asar);
+    throw e;
+  }
+  fs.unlinkSync(swap);
+  try {
+    fs.unlinkSync(META);
+  } catch {}
+  fs.writeFileSync(
+    STATE,
+    JSON.stringify(
+      {
+        installed: true,
+        version,
+        installedAt: new Date().toISOString(),
+        backup: backupName(version),
+        files: meta.files,
+        bytes: meta.bytes,
+        translations: meta.translations,
+        assetsHash: assetsHash(),
+      },
+      null,
+      2
+    )
+  );
+}
+
 function versionOf(header) {
   const node = getNode(header, ["package.json"]);
   if (!node) return "unknown";
@@ -248,24 +296,52 @@ function build() {
   replace.set(dictParts.join("/"), Buffer.from(merged, "utf8"));
   if (pickerBuf) replace.set(pickerEntry, pickerBuf);
 
+  // تبديل فوري بلا إعادة بناء (يُستدعى لحظة تحرّر app.asar)
+  if (arg("swap", false) === true) {
+    if (!newIsValid(version)) {
+      closeAsar(a);
+      fail("لا يوجد app.asar.new صالح لهذا الإصدار — شغّل البناء المسبق أولاً");
+    }
+    const meta = readMeta();
+    closeAsar(a);
+    swapIn(version, meta);
+    console.log("تم التبديل الفوري إلى الحزمة الجاهزة — الإصدار " + version);
+    return;
+  }
+
   console.log("بناء أرشيف جديد… (الإصدار " + version + ")");
   const started = Date.now();
-  const info = buildAsar(asar, asarNew, { replace });
-  const check = verifyAsar(asarNew);
-  console.log(
-    `تم البناء: ${check.files} ملفاً، ${(check.bytes / 1048576).toFixed(1)} م.ب، ` +
-      `${((Date.now() - started) / 1000).toFixed(1)} ثانية`
-  );
+  let meta = null;
+  if (newIsValid(version)) {
+    meta = readMeta();
+    console.log("إعادة استخدام app.asar.new الجاهز (بصمة مطابقة)");
+  } else {
+    const info = buildAsar(asar, asarNew, { replace });
+    const check = verifyAsar(asarNew);
+    console.log(
+      `تم البناء: ${check.files} ملفاً، ${(check.bytes / 1048576).toFixed(1)} م.ب، ` +
+        `${((Date.now() - started) / 1000).toFixed(1)} ثانية`
+    );
 
-  // تحقق من المحتوى بعد البناء
-  const v = openAsar(asarNew);
-  const newHtml = readEntry(v, ["out", "renderer", "index.html"]).toString("utf8");
-  const newDict = readEntry(v, dictParts).toString("utf8");
-  const newPicker = pickerEntry ? readEntry(v, pickerEntry.split("/")).toString("utf8") : null;
-  closeAsar(v);
-  if (!newHtml.includes(MARK_CSS) || !newHtml.includes(MARK_JS)) fail("فشل الحقن في index.html");
-  if (!newDict.includes("Object.assign(")) fail("فشل دمج الترجمات");
-  if (pickerEntry && !newPicker.includes("oc.lastDir")) fail("فشل تعديل مسار المنتقي");
+    // تحقق من المحتوى بعد البناء
+    const v = openAsar(asarNew);
+    const newHtml = readEntry(v, ["out", "renderer", "index.html"]).toString("utf8");
+    const newDict = readEntry(v, dictParts).toString("utf8");
+    const newPicker = pickerEntry ? readEntry(v, pickerEntry.split("/")).toString("utf8") : null;
+    closeAsar(v);
+    if (!newHtml.includes(MARK_CSS) || !newHtml.includes(MARK_JS)) fail("فشل الحقن في index.html");
+    if (!newDict.includes("Object.assign(")) fail("فشل دمج الترجمات");
+    if (pickerEntry && !newPicker.includes("oc.lastDir")) fail("فشل تعديل مسار المنتقي");
+
+    meta = {
+      version,
+      assetsHash: assetsHash(),
+      files: check.files,
+      bytes: check.bytes,
+      translations: keys.length,
+    };
+    fs.writeFileSync(META, JSON.stringify(meta, null, 2));
+  }
 
   const backup = backupName(version);
   if (!fs.existsSync(backup)) {
@@ -278,34 +354,7 @@ function build() {
     return;
   }
 
-  // تبديل ذرّي: الأصل إلى .bak ثم الجديد إلى مكانه
-  const swap = asar + ".swap";
-  fs.renameSync(asar, swap);
-  try {
-    fs.renameSync(asarNew, asar);
-  } catch (e) {
-    fs.renameSync(swap, asar);
-    throw e;
-  }
-  fs.unlinkSync(swap);
-
-  fs.writeFileSync(
-    STATE,
-    JSON.stringify(
-      {
-        installed: true,
-        version,
-        installedAt: new Date().toISOString(),
-        backup: backup,
-        files: check.files,
-        bytes: check.bytes,
-        translations: keys.length,
-        assetsHash: assetsHash(),
-      },
-      null,
-      2
-    )
-  );
+  swapIn(version, meta);
   console.log("تم التثبيت على الإصدار " + version);
 }
 
